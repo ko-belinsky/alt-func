@@ -1,3 +1,5 @@
+![Alt text](/preview.png?raw=true)
+
 # alt-func
 Терминальные функции для поиска и обновления пакетов для Альт Линукс (sisyphus/p11).
 
