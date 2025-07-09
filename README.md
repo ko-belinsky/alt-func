@@ -15,3 +15,10 @@ isv - типа installed search with version - поиск установленн
 dist-upgrade - форматирует вывод команды apt-get dist-upgrade, использует sudo.
 
 Всё это от начала и до конца написано с помощью ИИ.
+
+Установка:
+```
+git clone https://github.com/ko-belinsky/alt-func.git
+cd alt-func/
+make install
+```
