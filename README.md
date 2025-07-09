@@ -22,3 +22,5 @@ git clone https://github.com/ko-belinsky/alt-func.git
 cd alt-func/
 make install
 ```
+
+Там еще бонусом фунция homesize, для отображения размера папок в домашней директории  :D
