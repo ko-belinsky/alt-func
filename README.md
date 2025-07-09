@@ -1,6 +1,7 @@
 ![upgrade](/preview_dist-upgrade.png?raw=true)
 ![search](/preview_search.png?raw=true)
 
+
 # alt-func
 Терминальные функции для поиска и обновления пакетов для Альт Линукс (sisyphus/p11).
 
