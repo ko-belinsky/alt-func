@@ -1,3 +1,5 @@
+![upgrade](/preview_dist-upgrade.png?raw=true)
+
 ![search](/preview_search.png?raw=true)
 
 
