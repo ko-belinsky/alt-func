@@ -40,7 +40,7 @@ dist-upgrade() {
     echo ":: Формируется список..."
 
     # Выполняем dist-upgrade -s с таймаутом
-    updates=$(timeout 60 sudo apt-get dist-upgrade -s 2>/dev/null | grep -E "^Inst|^Remv")
+    updates=$(timeout 180 sudo apt-get dist-upgrade -s 2>/dev/null | grep -E "^Inst|^Remv")
     dist_upgrade_exit_code=$?
 
     # Проверяем код возврата
