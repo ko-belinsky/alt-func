@@ -2,25 +2,55 @@
 dist-upgrade() {
     # Функция для обработки прерывания
     handle_interrupt() {
-        echo -e "\033[31mСогласен, стрёмно это всё...\033[0m"
-        exit 1
+        echo -e "\n\033[31m:: Отмена\033[0m"
+        # Убиваем все дочерние процессы sudo и timeout
+        pkill -P $$ 2>/dev/null || true
+        pkill -f "apt-get" 2>/dev/null || true
+        # Завершаем функцию
+        return 1
     }
 
     # Устанавливаем обработчик SIGINT
     trap handle_interrupt SIGINT
-    
-#Проверяем права пользователя
+
+    # Проверяем права пользователя
     sudo -v
-    
-#Начинаем процесс обновления    
+
+    # Начинаем процесс обновления
     echo ":: Синхронизация, ожидайте..."
-    sudo apt-get update >/dev/null 2>&1
+
+    # Выполняем update с таймаутом
+    timeout 300 sudo apt-get update >/dev/null 2>&1
+    update_exit_code=$?
+
+    if [ $update_exit_code -ne 0 ]; then
+        # Проверяем код возврата timeout
+        if [ $update_exit_code -eq 124 ] || [ $update_exit_code -eq 143 ] || [ $update_exit_code -eq 130 ]; then
+            # Это прерывание или таймаут - уже обработано в handle_interrupt
+            return 1
+        else
+            echo -e ":: \033[31mОшибка при синхронизации репозиториев\033[0m"
+            return 1
+        fi
+    fi
 
     # Массив для склонения слова "пакет"
     pkg_word=("пакет" "пакета" "пакетов")
 
     echo ":: Формируется список..."
-    updates=$(sudo apt-get dist-upgrade -s | grep -E "^Inst|^Remv")
+
+    # Выполняем dist-upgrade -s с таймаутом
+    updates=$(timeout 60 sudo apt-get dist-upgrade -s 2>/dev/null | grep -E "^Inst|^Remv")
+    dist_upgrade_exit_code=$?
+
+    # Проверяем код возврата
+    if [ $dist_upgrade_exit_code -eq 124 ] || [ $dist_upgrade_exit_code -eq 143 ] || [ $dist_upgrade_exit_code -eq 130 ]; then
+        # Это прерывание или таймаут - уже обработано в handle_interrupt
+        return 1
+    elif [ $dist_upgrade_exit_code -ne 0 ]; then
+        echo -e ":: \033[31mОшибка при формировании списка обновлений\033[0m"
+        return 1
+    fi
 
     if [ -z "$updates" ]; then
         echo -e ":: \033[32mНет доступных обновлений.\033[0m"
@@ -135,7 +165,20 @@ dist-upgrade() {
     fi
 
     echo ":: Ну, погнали, помолясь..."
-    sudo apt-get dist-upgrade -y
+
+    # Выполняем dist-upgrade с таймаутом и проверкой прерывания
+    timeout 1800 sudo apt-get dist-upgrade -y
+    final_upgrade_exit_code=$?
+
+    # Проверяем код возврата
+    if [ $final_upgrade_exit_code -eq 124 ] || [ $final_upgrade_exit_code -eq 143 ] || [ $final_upgrade_exit_code -eq 130 ]; then
+        # Это прерывание или таймаут - уже обработано в handle_interrupt
+        return 1
+    elif [ $final_upgrade_exit_code -ne 0 ]; then
+        echo -e ":: \033[31mОшибка при обновлении системы\033[0m"
+        return 1
+    fi
+
     echo -e ":: \033[32mНе знаю, что из этого вышло. Проверяй!\033[0m"
 }
 
@@ -193,14 +236,14 @@ _rs_completion() {
     local cur=${COMP_WORDS[COMP_CWORD]}
     local cache_dir="/tmp/apt-cache"
     local cache_file="$cache_dir/pkglist"
-    
+
     # Создаем директорию для кэша если её нет
     mkdir -p "$cache_dir"
 
     # Проверяем время последнего обновления репозитория (МСК)
     local msk_time=$(TZ=Europe/Moscow date +%H)
     local cache_age=0
-    
+
     if [ -f "$cache_file" ]; then
         cache_age=$(($(date +%s) - $(stat -c %Y "$cache_file")))
     fi
