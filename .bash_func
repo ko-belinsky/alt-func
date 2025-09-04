@@ -20,7 +20,7 @@ dist-upgrade() {
         local num=$1
         local pkg_word=("пакет" "пакета" "пакетов")
         local idx
-
+        
         case $num in
             *1[0-9]) idx=2;;
             *1)      idx=0;;
@@ -30,65 +30,87 @@ dist-upgrade() {
         echo "${pkg_word[$idx]}"
     }
 
-    # Функция обработки строки обновления
-    process_update_line() {
-        local line="$1"
-        local -n u_count=$2 i_count=$3 r_count=$4 u_packages=$5 i_packages=$6 r_packages=$7
-        
-        line=$(echo "$line" | sed 's/).*//')
-        pkg_name=$(echo "$line" | awk '{print $2}')
-
-        # Обрезаем имя пакета если слишком длинное
-        if [ ${#pkg_name} -gt 37 ]; then
-            pkg_name=$(echo "$pkg_name" | cut -c -37)
-            pkg_name="$pkg_name..."
-        fi
-
-        if echo "$line" | grep -q "^Remv"; then
-            r_count=$((r_count + 1))
-            version=$(echo "$line" | grep -oP '\(\K[^)]+' | sed 's/\(:sisyphus\|:p11\).*//')
-            # Обрезаем версию если слишком длинная
-            if [ ${#version} -gt 20 ]; then
-                version=$(echo "$version" | cut -c -17)
-                version="$version..."
-            fi
-            r_packages+=("$pkg_name $version")
-            return
-        fi
-
-        current_version=$(echo "$line" | grep -oP '\[\K[^]]+')
-        [ -n "$current_version" ] && current_version=$(echo "$current_version" | sed 's/\(:sisyphus\|:p11\).*//')
-        # Обрезаем текущую версию если слишком длинная
-        if [ -n "$current_version" ] && [ ${#current_version} -gt 20 ]; then
-            current_version=$(echo "$current_version" | cut -c -17)
-            current_version="$current_version..."
-        fi
-
-        new_version=$(echo "$line" | grep -oP '\(\K[^)]+')
-        [ -n "$new_version" ] && new_version=$(echo "$new_version" | sed 's/\(:sisyphus\|:p11\).*//')
-        # Обрезаем новую версию если слишком длинная
-        if [ -n "$new_version" ] && [ ${#new_version} -gt 20 ]; then
-            new_version=$(echo "$new_version" | cut -c -17)
-            new_version="$new_version..."
-        fi
-
-        if [ -n "$current_version" ]; then
-            u_count=$((u_count + 1))
-            u_packages+=("$pkg_name $current_version $new_version")
-        else
-            i_count=$((i_count + 1))
-            i_packages+=("$pkg_name $new_version")
-        fi
-    }
-
     # Функция обработки обновлений
     process_updates() {
         local updates="$1"
         local -n u_count=$2 i_count=$3 r_count=$4 u_packages=$5 i_packages=$6 r_packages=$7
         
         while IFS= read -r line; do
-            process_update_line "$line" u_count i_count r_count u_packages i_packages r_packages
+            line=$(echo "$line" | sed 's/).*//')
+            pkg_name=$(echo "$line" | awk '{print $2}')
+
+            # Обрезаем имя пакета если слишком длинное
+            if [ ${#pkg_name} -gt 37 ]; then
+                pkg_name=$(echo "$pkg_name" | cut -c -37)
+                pkg_name="$pkg_name..."
+            fi
+
+            if echo "$line" | grep -q "^Remv"; then
+                r_count=$((r_count + 1))
+                version=$(echo "$line" | grep -oP '\(\K[^)]+' | sed 's/\(:sisyphus\|:p11\).*//')
+                # Обрезаем версию если слишком длинная
+                if [ ${#version} -gt 20 ]; then
+                    version=$(echo "$version" | cut -c -17)
+                    version="$version..."
+                fi
+                r_packages+=("$pkg_name $version")
+                continue
+            fi
+
+            current_version=$(echo "$line" | grep -oP '\[\K[^]]+')
+            [ -n "$current_version" ] && current_version=$(echo "$current_version" | sed 's/\(:sisyphus\|:p11\).*//')
+            # Обрезаем текущую версию если слишком длинная
+            if [ -n "$current_version" ] && [ ${#current_version} -gt 20 ]; then
+                current_version=$(echo "$current_version" | cut -c -17)
+                current_version="$current_version..."
+            fi
+
+            new_version=$(echo "$line" | grep -oP '\(\K[^)]+')
+            [ -n "$new_version" ] && new_version=$(echo "$new_version" | sed 's/\(:sisyphus\|:p11\).*//')
+            # Обрезаем новую версию если слишком длинная
+            if [ -n "$new_version" ] && [ ${#new_version} -gt 20 ]; then
+                new_version=$(echo "$new_version" | cut -c -17)
+                new_version="$new_version..."
+            fi
+
+            if [ -n "$current_version" ]; then
+                u_count=$((u_count + 1))
+                u_packages+=("$pkg_name $current_version $new_version")
+            else
+                i_count=$((i_count + 1))
+                i_packages+=("$pkg_name $new_version")
+            fi
         done <<< "$updates"
+    }
+
+    # Функция вывода таблицы пакетов
+    print_packages_table() {
+        local upgrade_packages=("${!1}") install_packages=("${!2}") remove_packages=("${!3}")
+        
+        echo "----------------------------------------------------------------------------------"
+        echo -e "\033[34mПакет                                    Текущая версия       Новая версия\033[0m"
+        echo "----------------------------------------------------------------------------------"
+
+        for pkg in "${upgrade_packages[@]}"; do
+            pkg_name=$(echo "$pkg" | awk '{print $1}')
+            current_version=$(echo "$pkg" | awk '{print $2}')
+            new_version=$(echo "$pkg" | awk '{print $3}')
+            printf "\033[33m%-40s\033[0m \033[0m%-20s\033[0m \033[97m%-20s\033[0m\n" "$pkg_name" "$current_version" "$new_version"
+        done
+
+        for pkg in "${install_packages[@]}"; do
+            pkg_name=$(echo "$pkg" | awk '{print $1}')
+            new_version=$(echo "$pkg" | awk '{print $2}')
+            printf "\033[32m%-40s\033[0m \033[0m%-20s\033[0m \033[97m%-20s\033[0m\n" "$pkg_name" "" "$new_version"
+        done
+
+        for pkg in "${remove_packages[@]}"; do
+            pkg_name=$(echo "$pkg" | awk '{print $1}')
+            version=$(echo "$pkg" | awk '{print $2}')
+            printf "\033[31m%-40s\033[0m \033[0m%-20s\033[0m \033[97m%-20s\033[0m\n" "$pkg_name" "$version" ""
+        done
+
+        echo "----------------------------------------------------------------------------------"
     }
 
     # Функция вывода таблицы пакетов
@@ -144,16 +166,16 @@ dist-upgrade() {
 
     updates=$(timeout 300 sudo apt-get dist-upgrade -s 2>&1 | grep -E "^Inst|^Remv")
     dist_upgrade_exit_code=$?
-
+    
     if is_timeout_or_interrupt $dist_upgrade_exit_code; then
         return 1
     fi
-
+    
     if [ -z "$updates" ]; then
         echo -e ":: \033[32mНет доступных обновлений.\033[0m"
         return
     fi
-
+    
     if [ $dist_upgrade_exit_code -ne 0 ]; then
         echo -e ":: \033[31mОшибка при формировании списка обновлений (код: $dist_upgrade_exit_code)\033[0m"
         return 1
