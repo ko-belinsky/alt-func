@@ -456,68 +456,64 @@ _isv_completion() {
 complete -F _rs_completion rs rsv inst
 complete -F _isv_completion isv rem
 
+#Показать размер файлов и папок в указанном или текущем каталоге.
 howmuch() {
-    local target_dir="${1:-.}"
+    # Вспомогательная функция для обработки элементов (файлов/папок)
+    process_items() {
+        local target_dir="$1"
+        local type="$2"
+        find "$target_dir" -maxdepth 1 -type "$type" ! -name "$(basename "$target_dir")" -exec du -sh {} \; 2>/dev/null \
+            | while read -r size path; do
+                short_path="${path#$target_dir/}"
+                short_path="${short_path#$target_dir}"
+                printf "%s\t%s\n" "$size" "$short_path"
+              done | sort -rh
+    }
 
-    # Получаем абсолютный путь
+    # Вспомогательная функция для вывода элементов
+    print_items() {
+        local output="$1"
+        local title="$2"
+        if [ -n "$output" ]; then
+            echo -e "\033[1;37m$title\033[0m"
+            echo "$output" | awk -F'\t' '{printf "\033[0;37m%-50s\033[0m \033[1;37m%s\033[0m\n", $2, $1}'
+        fi
+    }
+
+    local target_dir="${1:-.}"
     target_dir=$(realpath "$target_dir")
 
-    # Проверяем существование директории
     if [ ! -d "$target_dir" ]; then
         echo -e "\033[1;31mОшибка: Директория '$target_dir' не существует\033[0m"
         return 1
     fi
 
-    # Получаем данные о занятом месте
     local dir_info=$(df -h "$target_dir" | tail -1)
     local total=$(echo "$dir_info" | awk '{print $2}')
     local used=$(echo "$dir_info" | awk '{print $3}')
     local free=$(echo "$dir_info" | awk '{print $4}')
     local used_percent=$(echo "$dir_info" | awk '{print $5}')
 
-    # ASCII-заголовок с информацией
     echo -e "\033[1;35m========================================================\033[0m"
     echo -e "\033[1;37m◉ Директория: $target_dir\033[0m"
     echo -e "\033[1;37m◉ Всего: $total    ◉ Занято: $used ($used_percent)    ◉ Свободно: $free\033[0m"
     echo -e "\033[1;35m--------------------------------------------------------\033[0m\n"
 
-    # Проверяем наличие папок (правильная обработка пробелов)
-    local folders_output=$(find "$target_dir" -maxdepth 1 -type d ! -name "$(basename "$target_dir")" -exec du -sh {} \; 2>/dev/null \
-        | while read -r size path; do
-            # Удаляем путь к целевой директории
-            short_path="${path#$target_dir/}"
-            short_path="${short_path#$target_dir}" # на случай если target_dir без слеша
-            printf "%s\t%s\n" "$size" "$short_path"
-          done | sort -rh)
+    local folders_output=$(process_items "$target_dir" "d")
+    local files_output=$(process_items "$target_dir" "f")
 
-    if [ -n "$folders_output" ]; then
-        echo -e "\033[1;37m📁 ПАПКИ:\033[0m"
-        echo "$folders_output" | awk -F'\t' '{printf "\033[0;37m%-50s\033[0m \033[1;37m%s\033[0m\n", $2, $1}'
+    print_items "$folders_output" " ПАПКИ:"
+
+    if [ -n "$folders_output" ] && [ -n "$files_output" ]; then
+        echo ""
     fi
 
-    # Проверяем наличие файлов (правильная обработка пробелов)
-    local files_output=$(find "$target_dir" -maxdepth 1 -type f -exec du -sh {} \; 2>/dev/null \
-        | while read -r size path; do
-            # Удаляем путь к целевой директории
-            short_path="${path#$target_dir/}"
-            short_path="${short_path#$target_dir}" # на случай если target_dir без слеша
-            printf "%s\t%s\n" "$size" "$short_path"
-          done | sort -rh)
+    print_items "$files_output" " ФАЙЛЫ:"
 
-    if [ -n "$files_output" ]; then
-        # Добавляем пустую строку, если перед этим были папки
-        if [ -n "$folders_output" ]; then
-            echo ""
-        fi
-        echo -e "\033[1;37m📄 ФАЙЛЫ:\033[0m"
-        echo "$files_output" | awk -F'\t' '{printf "\033[0;37m%-50s\033[0m \033[1;37m%s\033[0m\n", $2, $1}'
-    fi
-
-    # Показываем общее количество файлов и папок
     local dir_count=$(find "$target_dir" -maxdepth 1 -type d | wc -l)
     local file_count=$(find "$target_dir" -maxdepth 1 -type f | wc -l)
 
     echo -e "\n\033[1;35m--------------------------------------------------------\033[0m"
-    echo -e "\033[1;37m📊 Итого: $(($dir_count - 1)) папок, $file_count файлов\033[0m"
+    echo -e "\033[1;37m Итого: $(($dir_count - 1)) папок, $file_count файлов\033[0m"
     echo -e "\033[1;35m========================================================\033[0m"
 }
