@@ -4,121 +4,23 @@ dist-upgrade() {
     # Функция для обработки прерывания
     handle_interrupt() {
         echo -e "\n\033[31m:: Отмена\033[0m"
-        # Убиваем все дочерние процессы sudo и timeout
         pkill -P $$ 2>/dev/null || true
         pkill -f "apt-get" 2>/dev/null || true
-        # Завершаем функцию
         return 1
     }
 
-    # Устанавливаем обработчик SIGINT
-    trap handle_interrupt SIGINT
+    # Функция проверки кода возврата timeout
+    is_timeout_or_interrupt() {
+        local exit_code=$1
+        [[ $exit_code -eq 124 || $exit_code -eq 143 || $exit_code -eq 130 ]]
+    }
 
-    # Проверяем права пользователя
-    sudo -v
-
-    # Начинаем процесс обновления
-    echo ":: Синхронизация, ожидайте..."
-
-    # Выполняем update с таймаутом
-    timeout 300 sudo apt-get update >/dev/null 2>&1
-    update_exit_code=$?
-
-    if [ $update_exit_code -ne 0 ]; then
-        # Проверяем код возврата timeout
-        if [ $update_exit_code -eq 124 ] || [ $update_exit_code -eq 143 ] || [ $update_exit_code -eq 130 ]; then
-            # Это прерывание или таймаут - уже обработано в handle_interrupt
-            return 1
-        else
-            echo -e ":: \033[31mОшибка при синхронизации репозиториев\033[0m"
-            return 1
-        fi
-    fi
-
-    # Массив для склонения слова "пакет"
-    pkg_word=("пакет" "пакета" "пакетов")
-
-    echo ":: Формируется список..."
-
-        # Выполняем dist-upgrade -s с таймаутом
-    updates=$(timeout 300 sudo apt-get dist-upgrade -s 2>&1 | grep -E "^Inst|^Remv")
-    dist_upgrade_exit_code=$?
-    
-    # Проверяем код возврата
-    if [ $dist_upgrade_exit_code -eq 124 ] || [ $dist_upgrade_exit_code -eq 143 ] || [ $dist_upgrade_exit_code -eq 130 ]; then
-        # Это прерывание или таймаут - уже обработано в handle_interrupt
-        return 1
-    fi
-    
-    # Если нет обновлений, выводим сообщение и выходим
-    if [ -z "$updates" ]; then
-        echo -e ":: \033[32mНет доступных обновлений.\033[0m"
-        return
-    fi
-    
-    # Если есть обновления, но команда завершилась с ошибкой
-    if [ $dist_upgrade_exit_code -ne 0 ]; then
-        echo -e ":: \033[31mОшибка при формировании списка обновлений (код: $dist_upgrade_exit_code)\033[0m"
-        return 1
-    fi
-
-    # Инициализируем переменные
-    upgrade_count=0
-    install_count=0
-    remove_count=0
-    upgrade_packages=()
-    install_packages=()
-    remove_packages=()
-
-    # Обрабатываем каждую строку
-    while IFS= read -r line; do
-        # Удаляем всё после закрывающей круглой скобки
-        line=$(echo "$line" | sed 's/).*//')
-
-        # Извлекаем название пакета
-        pkg_name=$(echo "$line" | awk '{print $2}')
-
-        # Обрезаем название пакета до 37 символов и добавляем ... только если оно было обрезано
-        if [ ${#pkg_name} -gt 37 ]; then
-            pkg_name=$(echo "$pkg_name" | cut -c -37)
-            pkg_name="$pkg_name..."
-        fi
-
-        # Обработка пакетов для удаления
-        if echo "$line" | grep -q "^Remv"; then
-            remove_count=$((remove_count + 1))
-            version=$(echo "$line" | grep -oP '\(\K[^)]+' | sed 's/\(:sisyphus\|:p11\).*//')
-            remove_packages+=("$pkg_name $version")
-            continue
-        fi
-
-        # Извлекаем текущую версию (если есть)
-        current_version=$(echo "$line" | grep -oP '\[\K[^]]+')
-        if [ -n "$current_version" ]; then
-            # Обрезаем версию после :sisyphus или первого :/@
-            current_version=$(echo "$current_version" | sed 's/\(:sisyphus\|:p11\).*//')
-        fi
-
-        # Извлекаем новую версию
-        new_version=$(echo "$line" | grep -oP '\(\K[^)]+')
-        if [ -n "$new_version" ]; then
-            # Обрезаем версию после :sisyphus или первого :/@
-            new_version=$(echo "$new_version" | sed 's/\(:sisyphus\|:p11\).*//')
-        fi
-
-        # Определяем тип пакета (обновление или установка)
-        if [ -n "$current_version" ]; then
-            upgrade_count=$((upgrade_count + 1))
-            upgrade_packages+=("$pkg_name $current_version $new_version")
-        else
-            install_count=$((install_count + 1))
-            install_packages+=("$pkg_name $new_version")
-        fi
-    done <<< "$updates"
-
-    # Функция для склонения
+    # Функция для склонения слова "пакет"
     plural_form() {
-        num=$1
+        local num=$1
+        local pkg_word=("пакет" "пакета" "пакетов")
+        local idx
+
         case $num in
             *1[0-9]) idx=2;;
             *1)      idx=0;;
@@ -128,39 +30,122 @@ dist-upgrade() {
         echo "${pkg_word[$idx]}"
     }
 
-    # Выводим заголовок с правильным склонением
+    # Функция обработки обновлений
+    process_updates() {
+        local updates="$1"
+        local -n u_count=$2 i_count=$3 r_count=$4 u_packages=$5 i_packages=$6 r_packages=$7
+
+        while IFS= read -r line; do
+            line=$(echo "$line" | sed 's/).*//')
+            pkg_name=$(echo "$line" | awk '{print $2}')
+
+            if [ ${#pkg_name} -gt 37 ]; then
+                pkg_name=$(echo "$pkg_name" | cut -c -37)
+                pkg_name="$pkg_name..."
+            fi
+
+            if echo "$line" | grep -q "^Remv"; then
+                r_count=$((r_count + 1))
+                version=$(echo "$line" | grep -oP '\(\K[^)]+' | sed 's/\(:sisyphus\|:p11\).*//')
+                r_packages+=("$pkg_name $version")
+                continue
+            fi
+
+            current_version=$(echo "$line" | grep -oP '\[\K[^]]+')
+            [ -n "$current_version" ] && current_version=$(echo "$current_version" | sed 's/\(:sisyphus\|:p11\).*//')
+
+            new_version=$(echo "$line" | grep -oP '\(\K[^)]+')
+            [ -n "$new_version" ] && new_version=$(echo "$new_version" | sed 's/\(:sisyphus\|:p11\).*//')
+
+            if [ -n "$current_version" ]; then
+                u_count=$((u_count + 1))
+                u_packages+=("$pkg_name $current_version $new_version")
+            else
+                i_count=$((i_count + 1))
+                i_packages+=("$pkg_name $new_version")
+            fi
+        done <<< "$updates"
+    }
+
+    # Функция вывода таблицы пакетов
+    print_packages_table() {
+        local upgrade_packages=("${!1}") install_packages=("${!2}") remove_packages=("${!3}")
+
+        echo "----------------------------------------------------------------------------------"
+        echo -e "\033[34mПакет                                    Текущая версия       Новая версия\033[0m"
+        echo "----------------------------------------------------------------------------------"
+
+        for pkg in "${upgrade_packages[@]}"; do
+            pkg_name=$(echo "$pkg" | awk '{print $1}')
+            current_version=$(echo "$pkg" | awk '{print $2}')
+            new_version=$(echo "$pkg" | awk '{print $3}')
+            printf "\033[33m%-40s\033[0m \033[0m%-20s\033[0m \033[97m%-20s\033[0m\n" "$pkg_name" "$current_version" "$new_version"
+        done
+
+        for pkg in "${install_packages[@]}"; do
+            pkg_name=$(echo "$pkg" | awk '{print $1}')
+            new_version=$(echo "$pkg" | awk '{print $2}')
+            printf "\033[32m%-40s\033[0m \033[0m%-20s\033[0m \033[97m%-20s\033[0m\n" "$pkg_name" "" "$new_version"
+        done
+
+        for pkg in "${remove_packages[@]}"; do
+            pkg_name=$(echo "$pkg" | awk '{print $1}')
+            version=$(echo "$pkg" | awk '{print $2}')
+            printf "\033[31m%-40s\033[0m \033[0m%-20s\033[0m \033[97m%-20s\033[0m\n" "$pkg_name" "$version" ""
+        done
+
+        echo "----------------------------------------------------------------------------------"
+    }
+
+    # Основная логика функции
+    trap handle_interrupt SIGINT
+
+    sudo -v
+
+    echo ":: Синхронизация, ожидайте..."
+
+    timeout 300 sudo apt-get update >/dev/null 2>&1
+    update_exit_code=$?
+
+    if [ $update_exit_code -ne 0 ]; then
+        if is_timeout_or_interrupt $update_exit_code; then
+            return 1
+        else
+            echo -e ":: \033[31mОшибка при синхронизации репозиториев\033[0m"
+            return 1
+        fi
+    fi
+
+    echo ":: Формируется список..."
+
+    updates=$(timeout 300 sudo apt-get dist-upgrade -s 2>&1 | grep -E "^Inst|^Remv")
+    dist_upgrade_exit_code=$?
+
+    if is_timeout_or_interrupt $dist_upgrade_exit_code; then
+        return 1
+    fi
+
+    if [ -z "$updates" ]; then
+        echo -e ":: \033[32mНет доступных обновлений.\033[0m"
+        return
+    fi
+
+    if [ $dist_upgrade_exit_code -ne 0 ]; then
+        echo -e ":: \033[31mОшибка при формировании списка обновлений (код: $dist_upgrade_exit_code)\033[0m"
+        return 1
+    fi
+
+    local upgrade_count=0 install_count=0 remove_count=0
+    local upgrade_packages=() install_packages=() remove_packages=()
+
+    process_updates "$updates" upgrade_count install_count remove_count upgrade_packages install_packages remove_packages
+
     echo -e ":: Найдено обновлений: \033[1;33m$upgrade_count\033[0m | \
 Установится: \033[1;32m$install_count\033[0m $(plural_form $install_count), \
 Удалится: \033[1;31m$remove_count\033[0m $(plural_form $remove_count)"
-    echo "----------------------------------------------------------------------------------"
-    echo -e "\033[34mПакет                                    Текущая версия       Новая версия\033[0m"
-    echo "----------------------------------------------------------------------------------"
 
-    # Выводим обновляемые пакеты
-    for pkg in "${upgrade_packages[@]}"; do
-        pkg_name=$(echo "$pkg" | awk '{print $1}')
-        current_version=$(echo "$pkg" | awk '{print $2}')
-        new_version=$(echo "$pkg" | awk '{print $3}')
-        printf "\033[33m%-40s\033[0m \033[0m%-20s\033[0m \033[97m%-20s\033[0m\n" "$pkg_name" "$current_version" "$new_version"
-    done
+    print_packages_table upgrade_packages[@] install_packages[@] remove_packages[@]
 
-    # Выводим устанавливаемые пакеты
-    for pkg in "${install_packages[@]}"; do
-        pkg_name=$(echo "$pkg" | awk '{print $1}')
-        new_version=$(echo "$pkg" | awk '{print $2}')
-        printf "\033[32m%-40s\033[0m \033[0m%-20s\033[0m \033[97m%-20s\033[0m\n" "$pkg_name" "" "$new_version"
-    done
-
-    # Выводим удаляемые пакеты
-    for pkg in "${remove_packages[@]}"; do
-        pkg_name=$(echo "$pkg" | awk '{print $1}')
-        version=$(echo "$pkg" | awk '{print $2}')
-        printf "\033[31m%-40s\033[0m \033[0m%-20s\033[0m \033[97m%-20s\033[0m\n" "$pkg_name" "$version" ""
-    done
-
-    echo "----------------------------------------------------------------------------------"
-
-    # Спрашиваем, выполнять ли обновление
     if [[ "$1" != "-y" ]]; then
         read -p ":: Надеюсь, система после этого не отрыгнет... пробуем? (y/n): " choice
         if [ "$choice" != "y" ]; then
@@ -171,13 +156,10 @@ dist-upgrade() {
 
     echo ":: Ну, погнали, помолясь..."
 
-    # Выполняем dist-upgrade с таймаутом и проверкой прерывания
     timeout 1800 sudo apt-get dist-upgrade -y
     final_upgrade_exit_code=$?
 
-    # Проверяем код возврата
-    if [ $final_upgrade_exit_code -eq 124 ] || [ $final_upgrade_exit_code -eq 143 ] || [ $final_upgrade_exit_code -eq 130 ]; then
-        # Это прерывание или таймаут - уже обработано в handle_interrupt
+    if is_timeout_or_interrupt $final_upgrade_exit_code; then
         return 1
     elif [ $final_upgrade_exit_code -ne 0 ]; then
         echo -e ":: \033[31mОшибка при обновлении системы\033[0m"
@@ -189,50 +171,201 @@ dist-upgrade() {
 
 # Цветной вывод поиска пакетов в репозитории
 rs() {
-    show_usage() { echo "Напишите, что нужно найти..."; return 1; }
-    get_package_versions() { local package_names="$1"; apt-cache policy $package_names; }
-    animate_waiting() {
-        local text="$1"; local frames=("   " ".  " ".. " "..." " .." "  .");
-        while true; do for frame in "${frames[@]}"; do echo -ne "\r$text $frame"; sleep 0.2; done; done
+    # Вспомогательная функция для показа использования
+    show_usage() {
+        echo "Напишите, что нужно найти..."
+        return 1
     }
-    check_installed() { local package_name="$1"; rpm -q --queryformat '%{NAME}' "$package_name" &>/dev/null; return $?; }
+
+    # Функция для получения версий пакетов
+    get_package_versions() {
+        local package_names="$1"
+        apt-cache policy $package_names
+    }
+
+    # Функция анимации ожидания
+    animate_waiting() {
+        local text="$1"
+        local frames=("   " ".  " ".. " "..." " .." "  .")
+
+        while true; do
+            for frame in "${frames[@]}"; do
+                echo -ne "\r$text $frame"
+                sleep 0.2
+            done
+        done
+    }
+
+    # Функция проверки установленности пакета (сохраняем оригинальную логику с rpm)
+    check_installed() {
+        local package_name="$1"
+        rpm -q --queryformat '%{NAME}' "$package_name" &>/dev/null
+        return $?
+    }
+
+    # Функция вывода результатов
     print_results() {
-        local results="$1"; local verbose="$2"; local policy_output="$3"; local words=("${@:4}");
+        local results="$1"
+        local verbose="$2"
+        local policy_output="$3"
+        local words=("${@:4}")
+
         echo "$results" | while read -r line; do
-            local package_name=$(echo "$line" | awk '{print $1}'); local description=$(echo "$line" | awk '{$1=""; print $0}' | sed 's/^ *//');
+            # Извлекаем имя пакета и описание
+            local package_name=$(echo "$line" | awk '{print $1}')
+            local description=$(echo "$line" | awk '{$1=""; print $0}' | sed 's/^ *//')
+
+            # Вывод имени пакета
             if $verbose; then
-                local candidate_version=$(echo "$policy_output" | awk -v pkg="$package_name" '$0 ~ pkg ":" { found=1 } found && /Кандидат:/ { print $2; exit }');
-                candidate_version=$(echo "$candidate_version" | sed 's/\(:sisyphus\|:p11\).*//'); echo -en "\033[33m$package_name\033[0m \033[32m($candidate_version)\033[0m";
-            else echo -en "\033[33m$package_name\033[0m"; fi
-            if check_installed "$package_name"; then echo -en " \033[0;95m[Установлен]\033[0m"; fi
-            for word in "${words[@]}"; do description=$(echo "$description" | awk -v word="$word" 'BEGIN {IGNORECASE=1} { gsub(word, "\033[1;37m&\033[0m", $0); print }'); done
+                # Получаем версию кандидата (оригинальная логика)
+                local candidate_version=$(echo "$policy_output" | awk -v pkg="$package_name" '
+                    $0 ~ pkg ":" { found=1 }
+                    found && /Кандидат:/ { print $2; exit }
+                ')
+                candidate_version=$(echo "$candidate_version" | sed 's/\(:sisyphus\|:p11\).*//')
+                echo -en "\033[33m$package_name\033[0m \033[32m($candidate_version)\033[0m"
+            else
+                echo -en "\033[33m$package_name\033[0m"
+            fi
+
+            # Проверка установлен ли пакет (оригинальная логика с rpm)
+            if check_installed "$package_name"; then
+                echo -en " \033[0;95m[Установлен]\033[0m"
+            fi
+
+            # Подсветка искомых слов в описании
+            for word in "${words[@]}"; do
+                description=$(echo "$description" | awk -v word="$word" '
+                    BEGIN {IGNORECASE=1}
+                    { gsub(word, "\033[1;37m&\033[0m", $0); print }
+                ')
+            done
+
             echo -e " $description"
         done
     }
-    local original_args="$*"; if [ -z "$original_args" ] || [[ "$original_args" =~ ^[[:space:]]*$ ]]; then show_usage; return 1; fi
-    local verbose=false; local exact_match=false; while [[ $# -gt 0 ]]; do case "$1" in -v|--verbose) verbose=true; shift ;; -e|--exact) exact_match=true; shift ;; *) break ;; esac; done
-    local query="$*"; if [ -z "$query" ] || [[ "$query" =~ ^[[:space:]]*$ ]]; then show_usage; return 1; fi
-    local words=($query); local regex=""; for word in "${words[@]}"; do regex+="(?=.*${word})"; done
-    local grep_options="-P"; if ! $exact_match; then grep_options+="i"; fi
-    local results=$(apt-cache search . | grep $grep_options "$regex"); if [ -z "$results" ]; then echo -e "\nПо вашему запросу ничего не найдено..."; return 0; fi
-    local count=$(echo "$results" | wc -l); local found_words=("Найден всего" "Найдено" "Найдено"); local package_words=("пакетик" "пакетика" "пакетиков"); local suitable_words=("подходящий" "подходящих" "подходящих")
-    local index; if [ "$count" -eq 1 ]; then index=0; elif [ "$count" -ge 2 ] && [ "$count" -le 4 ]; then index=1; else index=2; fi
+
+    # Основная логика функции
+    local original_args="$*"
+
+    # Проверка на пустой ввод
+    if [ -z "$original_args" ] || [[ "$original_args" =~ ^[[:space:]]*$ ]]; then
+        show_usage
+        return 1
+    fi
+
+    # Разбор аргументов
+    local verbose=false
+    local exact_match=false
+    local query=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -v|--verbose)
+                verbose=true
+                shift
+                ;;
+            -e|--exact)
+                exact_match=true
+                shift
+                ;;
+            *)
+                query="$query $1"
+                shift
+                ;;
+        esac
+    done
+
+    # Убираем лишние пробелы
+    query=$(echo "$query" | sed 's/^ *//;s/ *$//')
+
+    # Проверка на пустой запрос после разбора флагов
+    if [ -z "$query" ] || [[ "$query" =~ ^[[:space:]]*$ ]]; then
+        show_usage
+        return 1
+    fi
+
+    # Подготовка слов для поиска
+    local words=($query)
+    local regex=""
+
+    for word in "${words[@]}"; do
+        regex+="(?=.*${word})"
+    done
+
+    # Настройки grep
+    local grep_options="-P"
+    if ! $exact_match; then
+        grep_options+="i"
+    fi
+
+    # Поиск пакетов
+    local results=$(apt-cache search . | grep $grep_options "$regex")
+
+    if [ -z "$results" ]; then
+        echo -e "\nПо вашему запросу ничего не найдено..."
+        return 0
+    fi
+
+    # Статистика найденных пакетов
+    local count=$(echo "$results" | wc -l)
+    local found_words=("Найден всего" "Найдено" "Найдено")
+    local package_words=("пакетик" "пакетика" "пакетиков")
+    local suitable_words=("подходящий" "подходящих" "подходящих")
+
+    local index
+    if [ "$count" -eq 1 ]; then
+        index=0
+    elif [ "$count" -ge 2 ] && [ "$count" -le 4 ]; then
+        index=1
+    else
+        index=2
+    fi
+
     echo -e "\n${found_words[$index]} $count ${suitable_words[$index]} ${package_words[$index]}:\n"
+
+    # Получение информации о версиях (если нужно)
     if $verbose; then
-        set +m; echo -ne "\e[?25l"; { animate_waiting "получение версий" & } 2>/dev/null; local animation_pid=$!; disown $animation_pid 2>/dev/null
-        local package_names=$(echo "$results" | awk '{print $1}'); local policy_output=$(get_package_versions "$package_names")
-        kill $animation_pid 2>/dev/null; wait $animation_pid 2>/dev/null; echo -ne "\r\033[K"; echo -ne "\e[?25h"; set -m
-    else local policy_output=""; fi
+        # Сохраняем оригинальную логику с анимацией
+        set +m
+        echo -ne "\e[?25l"
+
+        {
+            animate_waiting "получение версий" &
+        } 2>/dev/null
+
+        local animation_pid=$!
+        disown $animation_pid 2>/dev/null
+
+        local package_names=$(echo "$results" | awk '{print $1}')
+        local policy_output=$(get_package_versions "$package_names")
+
+        # Останавливаем анимацию
+        kill $animation_pid 2>/dev/null
+        wait $animation_pid 2>/dev/null
+        echo -ne "\r\033[K"
+        echo -ne "\e[?25h"
+        set -m
+    else
+        local policy_output=""
+    fi
+
+    # Вывод результатов
     print_results "$results" "$verbose" "$policy_output" "${words[@]}"
 }
-
 
 
 # Поиск установленных пакетов с цветным выводом
 isv() {
     rpm -qa | grep -i "$1" | while read -r pkg; do
-        # Получаем данные и выводим их в одну строку
-        echo -e "\e[33m$(rpm -q --queryformat '%{NAME}\n' "$pkg")\e[0m \e[32m$(rpm -q --queryformat '%{VERSION}-%{RELEASE}\n' "$pkg")\e[0m \e[95m[Установлен:\e[0m \e[97m$(rpm -q --queryformat '%{INSTALLTIME:date}\n' "$pkg")\e[0m\e[95m]\e[0m - $(rpm -q --queryformat '%{SUMMARY}\n' "$pkg")"
+        # Получаем данные о пакете
+        local name=$(rpm -q --queryformat '%{NAME}\n' "$pkg")
+        local version=$(rpm -q --queryformat '%{VERSION}-%{RELEASE}\n' "$pkg")
+        local install_time=$(rpm -q --queryformat '%{INSTALLTIME:date}\n' "$pkg")
+        local summary=$(rpm -q --queryformat '%{SUMMARY}\n' "$pkg")
+
+        # Форматируем вывод с цветами
+        echo -e "\e[33m$name\e[0m \e[32m$version\e[0m \e[95m[Установлен:\e[0m \e[97m$install_time\e[0m\e[95m]\e[0m - $summary"
     done
 }
 
@@ -274,25 +407,71 @@ _isv_completion() {
 }
 
 # Регистрация автодополнения
-complete -F _rs_completion rs rsv
-complete -F _isv_completion isv
+complete -F _rs_completion rs rsv inst
+complete -F _isv_completion isv rem
 
-homesize() {
-    # Получаем данные о занятом месте в /home
-    home_info=$(df -h /home | tail -1)
-    total=$(echo "$home_info" | awk '{print $2}')
-    used=$(echo "$home_info" | awk '{print $3}')
-    free=$(echo "$home_info" | awk '{print $4}')
-    used_percent=$(echo "$home_info" | awk '{print $5}')
+howmuch() {
+    local target_dir="${1:-.}"
+
+    # Получаем абсолютный путь
+    target_dir=$(realpath "$target_dir")
+
+    # Проверяем существование директории
+    if [ ! -d "$target_dir" ]; then
+        echo -e "\033[1;31mОшибка: Директория '$target_dir' не существует\033[0m"
+        return 1
+    fi
+
+    # Получаем данные о занятом месте
+    local dir_info=$(df -h "$target_dir" | tail -1)
+    local total=$(echo "$dir_info" | awk '{print $2}')
+    local used=$(echo "$dir_info" | awk '{print $3}')
+    local free=$(echo "$dir_info" | awk '{print $4}')
+    local used_percent=$(echo "$dir_info" | awk '{print $5}')
 
     # ASCII-заголовок с информацией
     echo -e "\033[1;35m========================================================\033[0m"
-    echo -e "\033[1;32m◉ Всего: $total    ◉ Занято: $used ($used_percent)    ◉ Свободно: $free\033[0m"
+    echo -e "\033[1;37m◉ Директория: $target_dir\033[0m"
+    echo -e "\033[1;37m◉ Всего: $total    ◉ Занято: $used ($used_percent)    ◉ Свободно: $free\033[0m"
     echo -e "\033[1;35m--------------------------------------------------------\033[0m\n"
 
-    # Вывод размеров папок
-    find ~ -maxdepth 1 -type d ! -name "$(basename ~)" -exec du -sh {} + 2>/dev/null \
-    | awk '{printf "%s\t%s\n", $1, $2}' \
-    | sort -rh \
-    | awk -F'\t' '{printf "\033[1;33m%-50s\033[0m \033[1;32m%s\033[0m\n", $2, $1}'
+    # Проверяем наличие папок (правильная обработка пробелов)
+    local folders_output=$(find "$target_dir" -maxdepth 1 -type d ! -name "$(basename "$target_dir")" -exec du -sh {} \; 2>/dev/null \
+        | while read -r size path; do
+            # Удаляем путь к целевой директории
+            short_path="${path#$target_dir/}"
+            short_path="${short_path#$target_dir}" # на случай если target_dir без слеша
+            printf "%s\t%s\n" "$size" "$short_path"
+          done | sort -rh)
+
+    if [ -n "$folders_output" ]; then
+        echo -e "\033[1;37m📁 ПАПКИ:\033[0m"
+        echo "$folders_output" | awk -F'\t' '{printf "\033[0;37m%-50s\033[0m \033[1;37m%s\033[0m\n", $2, $1}'
+    fi
+
+    # Проверяем наличие файлов (правильная обработка пробелов)
+    local files_output=$(find "$target_dir" -maxdepth 1 -type f -exec du -sh {} \; 2>/dev/null \
+        | while read -r size path; do
+            # Удаляем путь к целевой директории
+            short_path="${path#$target_dir/}"
+            short_path="${short_path#$target_dir}" # на случай если target_dir без слеша
+            printf "%s\t%s\n" "$size" "$short_path"
+          done | sort -rh)
+
+    if [ -n "$files_output" ]; then
+        # Добавляем пустую строку, если перед этим были папки
+        if [ -n "$folders_output" ]; then
+            echo ""
+        fi
+        echo -e "\033[1;37m📄 ФАЙЛЫ:\033[0m"
+        echo "$files_output" | awk -F'\t' '{printf "\033[0;37m%-50s\033[0m \033[1;37m%s\033[0m\n", $2, $1}'
+    fi
+
+    # Показываем общее количество файлов и папок
+    local dir_count=$(find "$target_dir" -maxdepth 1 -type d | wc -l)
+    local file_count=$(find "$target_dir" -maxdepth 1 -type f | wc -l)
+
+    echo -e "\n\033[1;35m--------------------------------------------------------\033[0m"
+    echo -e "\033[1;37m📊 Итого: $(($dir_count - 1)) папок, $file_count файлов\033[0m"
+    echo -e "\033[1;35m========================================================\033[0m"
 }
