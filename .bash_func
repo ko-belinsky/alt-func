@@ -502,7 +502,7 @@ howmuch() {
     local folders_output=$(process_items "$target_dir" "d")
     local files_output=$(process_items "$target_dir" "f")
 
-    print_items "$folders_output" " ПАПКИ:"
+    print_items "$folders_output" "󰉖 ПАПКИ:"
 
     if [ -n "$folders_output" ] && [ -n "$files_output" ]; then
         echo ""
