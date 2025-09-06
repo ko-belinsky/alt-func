@@ -6,7 +6,8 @@ dist-upgrade() {
         echo -e "\n\033[31m:: Отмена\033[0m"
         pkill -P $$ 2>/dev/null || true
         pkill -f "apt-get" 2>/dev/null || true
-        return 1
+        trap - SIGINT  # Очищаем trap
+        return 130  # Завершаем функцию с кодом прерывания
     }
 
     # Функция проверки кода возврата timeout
@@ -155,9 +156,11 @@ dist-upgrade() {
 
     if [ $update_exit_code -ne 0 ]; then
         if is_timeout_or_interrupt $update_exit_code; then
+            trap - SIGINT
             return 1
         else
             echo -e ":: \033[31mОшибка при синхронизации репозиториев\033[0m"
+            trap - SIGINT
             return 1
         fi
     fi
@@ -168,16 +171,19 @@ dist-upgrade() {
     dist_upgrade_exit_code=$?
     
     if is_timeout_or_interrupt $dist_upgrade_exit_code; then
+        trap - SIGINT
         return 1
     fi
     
     if [ -z "$updates" ]; then
         echo -e ":: \033[32mНет доступных обновлений.\033[0m"
+        trap - SIGINT
         return
     fi
     
     if [ $dist_upgrade_exit_code -ne 0 ]; then
         echo -e ":: \033[31mОшибка при формировании списка обновлений (код: $dist_upgrade_exit_code)\033[0m"
+        trap - SIGINT
         return 1
     fi
 
@@ -193,9 +199,22 @@ dist-upgrade() {
     print_packages_table upgrade_packages[@] install_packages[@] remove_packages[@]
 
     if [[ "$1" != "-y" ]]; then
+        # Временно отключаем trap для read, чтобы избежать проблем с прерыванием
+        trap - SIGINT
         read -p ":: Надеюсь, система после этого не отрыгнет... пробуем? (y/n): " choice
+        # Восстанавливаем trap
+        trap handle_interrupt SIGINT
+        
+        # Проверяем, был ли прерван ввод (пустая строка при Ctrl+C)
+        if [ -z "$choice" ]; then
+            echo -e "\n\033[31m:: Отмена\033[0m"
+            trap - SIGINT
+            return 130
+        fi
+        
         if [ "$choice" != "y" ]; then
             echo -e ":: \033[31mСогласен, стрёмно это всё...\033[0m"
+            trap - SIGINT
             return
         fi
     fi
@@ -206,13 +225,18 @@ dist-upgrade() {
     final_upgrade_exit_code=$?
 
     if is_timeout_or_interrupt $final_upgrade_exit_code; then
+        trap - SIGINT
         return 1
     elif [ $final_upgrade_exit_code -ne 0 ]; then
         echo -e ":: \033[31mОшибка при обновлении системы\033[0m"
+        trap - SIGINT
         return 1
     fi
 
     echo -e ":: \033[32mНе знаю, что из этого вышло. Проверяй!\033[0m"
+    
+    # Очищаем trap при нормальном завершении
+    trap - SIGINT
 }
 
 # Цветной вывод поиска пакетов в репозитории
